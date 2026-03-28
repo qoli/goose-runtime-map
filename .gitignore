@@ -4,3 +4,4 @@ __pycache__/
 history/*.md
 !history/.gitkeep
 history/
+.grm-history/

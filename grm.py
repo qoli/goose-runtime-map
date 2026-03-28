@@ -16,9 +16,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
-ROOT_DIR = Path(__file__).resolve().parent
-HISTORY_DIR = ROOT_DIR / "history"
-
 PROMPT_TEMPLATE = """你現在不是做專案概覽，而是在做一次「問題導向的 runtime map」。
 
 問題：
@@ -104,12 +101,22 @@ def extract_field(prefix: str, text: str) -> str:
     return ""
 
 
+def get_history_dir() -> Path:
+    return Path.cwd() / ".grm-history"
+
+
 def list_history_entries() -> list[HistoryEntry]:
-    if not HISTORY_DIR.exists():
+    history_dir = get_history_dir()
+    if not history_dir.exists():
         return []
 
     entries: list[HistoryEntry] = []
-    for path in sorted(HISTORY_DIR.glob("*.md"), reverse=True):
+    try:
+        history_paths = sorted(history_dir.glob("*.md"), reverse=True)
+    except OSError as exc:
+        raise ValueError(f"unable to read history directory '{history_dir}': {exc}") from exc
+
+    for path in history_paths:
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -241,10 +248,15 @@ def run_goose(prompt: str, goose_bin: str, mode: str) -> tuple[int, str, str, fl
 
 
 def write_history(question: str, answer: str, stderr: str, exit_code: int, duration: float) -> Path:
-    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    history_dir = get_history_dir()
+    try:
+        history_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(f"unable to create history directory '{history_dir}': {exc}") from exc
+
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     filename = f"{timestamp}-{slugify(question)}.md"
-    path = HISTORY_DIR / filename
+    path = history_dir / filename
 
     body = [
         "# Goose Runtime Map Record",
@@ -267,7 +279,10 @@ def write_history(question: str, answer: str, stderr: str, exit_code: int, durat
     if stderr.strip():
         body.extend(["", "## Stderr", "", "```text", stderr.rstrip(), "```"])
 
-    path.write_text("\n".join(body) + "\n", encoding="utf-8")
+    try:
+        path.write_text("\n".join(body) + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"unable to write history file '{path}': {exc}") from exc
     return path
 
 

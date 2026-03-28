@@ -67,7 +67,9 @@ source ~/.zshrc
 
 Saved answers are stored under:
 
-- `history/<timestamp>-<question-slug>.md`
+- `./.grm-history/<timestamp>-<question-slug>.md`
+
+History is isolated by your current working directory. Running `grm` in different directories creates separate history sets.
 
 History mode only re-renders existing markdown answers. It does **not** call `goose`.
 
