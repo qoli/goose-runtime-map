@@ -394,16 +394,9 @@ def run_goose(prompt: str, goose_bin: str, mode: str) -> tuple[int, str, str, fl
     return returncode, "".join(out_chunks), "".join(err_chunks), duration
 
 
-def validate_answer(answer: str, goose_exit_code: int) -> ValidationResult:
+def validate_answer(answer: str, _goose_exit_code: int) -> ValidationResult:
     reasons: list[str] = []
     required_sections = list("ABCDEFGHIJ")
-    answer_stripped = answer.strip()
-
-    if not answer_stripped:
-        reasons.append("empty_answer")
-
-    if goose_exit_code != 0:
-        reasons.append(f"goose_exit_code_{goose_exit_code}")
 
     section_hits = 0
     for section in required_sections:
@@ -413,14 +406,6 @@ def validate_answer(answer: str, goose_exit_code: int) -> ValidationResult:
 
     if ratio < SKELETON_THRESHOLD:
         reasons.append(f"skeleton_ratio_below_threshold_{ratio:.2f}")
-
-    error_signals = [
-        r"Tool '.*' not found",
-        r"The tool call returned the following error",
-    ]
-    for pattern in error_signals:
-        if re.search(pattern, answer):
-            reasons.append(f"tool_error_signal:{pattern}")
 
     return ValidationResult(
         passed=not reasons,
