@@ -38,7 +38,15 @@ Useful flags:
 python3 grm.py --status stream|stage|min
 python3 grm.py --width 120
 python3 grm.py --no-glow
+python3 grm.py --model MLX-Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-4bit
 ```
+
+Model override notes:
+
+- `--model` does not rely on Goose implicit provider selection.
+- `grm` resolves your active Goose config, reads `GOOSE_PROVIDER`, and runs Goose as:
+  - `goose run --instructions - --no-session --quiet --provider <provider-from-config> --model <requested-model>`
+- If the Goose config path or `GOOSE_PROVIDER` cannot be resolved, `grm --model ...` fails fast instead of guessing.
 
 ## Alias
 
@@ -53,6 +61,7 @@ After install:
 
 ```bash
 grm "What roles does this project have?"
+grm --model MLX-Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-4bit "Trace the runtime startup path"
 grm
 ```
 

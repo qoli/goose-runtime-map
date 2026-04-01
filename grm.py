@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -204,6 +205,13 @@ class ValidationResult:
     reasons: list[str]
 
 
+@dataclass(frozen=True)
+class ModelOverride:
+    model: str
+    provider: str
+    config_path: Path
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Goose runtime-map wrapper with history viewing and glow rendering."
@@ -219,6 +227,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--width", type=int, default=120, help="glow render width")
     parser.add_argument("--no-glow", action="store_true", help="Print markdown without glow")
+    parser.add_argument("--model", help="Override Goose model for this run")
     parser.add_argument("--goose-bin", default=os.environ.get("GOOSE_BIN", "goose"))
     parser.add_argument("--glow-bin", default=os.environ.get("GLOW_BIN", "glow"))
     return parser.parse_args()
@@ -355,11 +364,92 @@ def collect_stream(
             print(chunk, end="", file=target, flush=True)
 
 
-def run_goose(prompt: str, goose_bin: str, mode: str) -> tuple[int, str, str, float]:
+def parse_goose_info_config_path(info_text: str) -> Path | None:
+    for line in info_text.splitlines():
+        if line.startswith("Config yaml:"):
+            raw_path = line.split(":", 1)[1].strip()
+            if raw_path:
+                return Path(raw_path)
+    return None
+
+
+def read_goose_config_path(goose_bin: str) -> Path:
+    if shutil.which(goose_bin) is None:
+        raise FileNotFoundError(f"goose binary not found: {goose_bin}")
+
+    proc = subprocess.run(
+        [goose_bin, "info"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        stderr = proc.stderr.strip() or "(no stderr)"
+        raise ValueError(f"unable to read goose info using '{goose_bin}': {stderr}")
+
+    config_path = parse_goose_info_config_path(proc.stdout)
+    if config_path is None:
+        raise ValueError(f"unable to locate Goose config path from '{goose_bin} info'")
+    return config_path
+
+
+def parse_goose_provider(config_text: str) -> str | None:
+    for raw_line in config_text.splitlines():
+        if not raw_line or raw_line[0].isspace():
+            continue
+        if raw_line.startswith("#"):
+            continue
+        if not raw_line.startswith("GOOSE_PROVIDER:"):
+            continue
+
+        value = raw_line.split(":", 1)[1].strip()
+        if not value:
+            return None
+        if value[0] in ("'", '"') and value[-1:] == value[0]:
+            value = value[1:-1]
+        return value.strip() or None
+    return None
+
+
+def resolve_model_override(goose_bin: str, requested_model: str | None) -> ModelOverride | None:
+    if not requested_model:
+        return None
+
+    config_path = read_goose_config_path(goose_bin)
+    try:
+        config_text = config_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise ValueError(f"unable to read Goose config '{config_path}': {exc}") from exc
+
+    provider = parse_goose_provider(config_text)
+    if not provider:
+        raise ValueError(f"unable to resolve GOOSE_PROVIDER from Goose config '{config_path}'")
+
+    return ModelOverride(model=requested_model, provider=provider, config_path=config_path)
+
+
+def build_goose_command(goose_bin: str, model_override: ModelOverride | None = None) -> list[str]:
     if shutil.which(goose_bin) is None:
         raise FileNotFoundError(f"goose binary not found: {goose_bin}")
 
     command = [goose_bin, "run", "--instructions", "-", "--no-session", "--quiet"]
+    if model_override is not None:
+        command.extend(
+            [
+                "--provider",
+                model_override.provider,
+                "--model",
+                model_override.model,
+            ]
+        )
+    return command
+
+
+def format_command(command: list[str]) -> str:
+    return shlex.join(command)
+
+
+def run_goose(prompt: str, command: list[str], mode: str) -> tuple[int, str, str, float]:
     start = time.monotonic()
     proc = subprocess.Popen(
         command,
@@ -424,6 +514,8 @@ def write_history(
     duration: float,
     attempts_used: int,
     validation: ValidationResult,
+    command: list[str],
+    model_override: ModelOverride | None = None,
 ) -> Path:
     history_dir = get_history_dir()
     try:
@@ -447,7 +539,7 @@ def write_history(
         f"- skeleton_ratio: {validation.ratio:.3f}",
         f"- matched_sections: {validation.matched_sections}/{validation.total_sections}",
         f"- validation_reasons: {', '.join(validation.reasons) if validation.reasons else '(none)'}",
-        "- command: goose run --instructions - --no-session --quiet",
+        f"- command: {format_command(command)}",
         "",
         "## Question",
         "",
@@ -457,6 +549,13 @@ def write_history(
         "",
         answer.strip() or "(empty answer)",
     ]
+
+    if model_override is not None:
+        body[10:10] = [
+            f"- model_override: {model_override.model}",
+            f"- provider_from_config: {model_override.provider}",
+            f"- provider_config_path: {model_override.config_path}",
+        ]
 
     if stderr.strip():
         body.extend(["", "## Stderr", "", "```text", stderr.rstrip(), "```"])
@@ -495,6 +594,18 @@ def run_history_mode(args: argparse.Namespace) -> int:
 def run_question_mode(question: str, args: argparse.Namespace) -> int:
     print_status("[status] preparing prompt", "stage", args.status)
     prompt = PROMPT_TEMPLATE.format(question=question)
+    model_override = resolve_model_override(args.goose_bin, args.model)
+    goose_command = build_goose_command(args.goose_bin, model_override)
+
+    if model_override is not None:
+        print_status(
+            (
+                "[status] model override active: "
+                f"provider={model_override.provider} model={model_override.model}"
+            ),
+            "stage",
+            args.status,
+        )
 
     attempts_used = 0
     exit_code = 1
@@ -516,7 +627,7 @@ def run_question_mode(question: str, args: argparse.Namespace) -> int:
             "stage",
             args.status,
         )
-        exit_code, answer, stderr_text, duration = run_goose(prompt, args.goose_bin, args.status)
+        exit_code, answer, stderr_text, duration = run_goose(prompt, goose_command, args.status)
         validation = validate_answer(answer, exit_code)
 
         validation_msg = (
@@ -544,6 +655,8 @@ def run_question_mode(question: str, args: argparse.Namespace) -> int:
         duration=duration,
         attempts_used=attempts_used,
         validation=validation,
+        command=goose_command,
+        model_override=model_override,
     )
 
     print_status(f"[status] history saved: {history_path}", "stage", args.status)
