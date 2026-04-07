@@ -7,6 +7,8 @@ A CLI wrapper around `goose run` for runtime-map analysis prompts, with:
 - answer history storage and read-only history viewer
 - optional global alias installer (`grm`)
 
+Goose CLI maintenance, default provider/model changes, and provider JSON upkeep are documented under `../goose/README.md` and `../goose/docs/MAINTENANCE.md`. This folder documents the `grm` tool itself, not the main Goose runtime baseline.
+
 ## Requirements
 
 - `python3`
